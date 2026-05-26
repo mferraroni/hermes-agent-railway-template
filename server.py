@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import signal
+import sqlite3
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -551,6 +552,85 @@ async def api_pairing_revoke(request: Request):
     return JSONResponse({"ok": True})
 
 
+KANBAN_DIR = Path(HERMES_HOME) / "kanban" / "boards"
+
+KANBAN_STATUS_ORDER = ["todo", "in_progress", "blocked", "done", "cancelled"]
+KANBAN_STATUS_LABELS = {
+    "todo": "Todo",
+    "in_progress": "In Progress",
+    "blocked": "Blocked",
+    "done": "Done",
+    "cancelled": "Cancelled",
+}
+
+
+def _kanban_boards() -> list[dict]:
+    boards = []
+    if not KANBAN_DIR.exists():
+        return boards
+    for board_dir in sorted(KANBAN_DIR.iterdir()):
+        board_json = board_dir / "board.json"
+        if not board_json.exists():
+            continue
+        try:
+            board = json.loads(board_json.read_text(encoding="utf-8"))
+            if not board.get("archived", False):
+                boards.append(board)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return boards
+
+
+def _kanban_tasks(slug: str) -> list[dict]:
+    db_path = KANBAN_DIR / slug / "kanban.db"
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, body, status, priority, assignee, created_at, "
+            "started_at, completed_at, last_failure_error, consecutive_failures "
+            "FROM tasks ORDER BY priority DESC, created_at ASC"
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+async def api_kanban_boards(request: Request):
+    auth_err = require_auth(request)
+    if auth_err:
+        return auth_err
+    boards = _kanban_boards()
+    for board in boards:
+        slug = board.get("slug", "")
+        tasks = _kanban_tasks(slug)
+        counts: dict[str, int] = {}
+        for t in tasks:
+            s = t.get("status", "unknown")
+            counts[s] = counts.get(s, 0) + 1
+        board["task_counts"] = counts
+        board["total_tasks"] = len(tasks)
+    return JSONResponse({"boards": boards})
+
+
+async def api_kanban_tasks(request: Request):
+    auth_err = require_auth(request)
+    if auth_err:
+        return auth_err
+    slug = request.path_params.get("slug", "")
+    tasks = _kanban_tasks(slug)
+    return JSONResponse({
+        "tasks": tasks,
+        "status_order": KANBAN_STATUS_ORDER,
+        "status_labels": KANBAN_STATUS_LABELS,
+    })
+
+
 async def auto_start_gateway():
     env_vars = read_env_file(ENV_FILE_PATH)
     has_provider = any(env_vars.get(key) for key in PROVIDER_KEYS)
@@ -573,6 +653,8 @@ routes = [
     Route("/api/pairing/deny", api_pairing_deny, methods=["POST"]),
     Route("/api/pairing/approved", api_pairing_approved),
     Route("/api/pairing/revoke", api_pairing_revoke, methods=["POST"]),
+    Route("/api/kanban", api_kanban_boards),
+    Route("/api/kanban/{slug}/tasks", api_kanban_tasks),
 ]
 
 @asynccontextmanager

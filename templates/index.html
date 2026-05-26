@@ -49,6 +49,8 @@
       </button>
       <button @click="tab = 'status'" class="px-4 py-2 text-sm font-medium rounded-t-lg transition"
               :class="tab === 'status' ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-white' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'">Status</button>
+      <button @click="tab = 'kanban'; loadKanban()" class="px-4 py-2 text-sm font-medium rounded-t-lg transition"
+              :class="tab === 'kanban' ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-white' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'">Kanban</button>
     </div>
 
     <div x-show="tab === 'config'">
@@ -452,6 +454,138 @@
       </div>
     </div>
 
+    <!-- Kanban Tab -->
+    <div x-show="tab === 'kanban'">
+      <div class="space-y-6">
+
+        <!-- Board selector -->
+        <div x-show="kanbanBoards.length === 0 && !kanbanLoading" class="text-center py-12 text-gray-400 dark:text-gray-600 text-sm">
+          No kanban boards found. Create one with <code class="bg-gray-100 dark:bg-gray-800 px-1 rounded">hermes kanban board create &lt;name&gt;</code>
+        </div>
+        <div x-show="kanbanLoading" class="text-center py-12 text-gray-400 dark:text-gray-600 text-sm">Loading boards…</div>
+
+        <!-- Board list header (shown when no board selected) -->
+        <div x-show="!kanbanLoading && kanbanBoards.length > 0 && !kanbanActiveSlug">
+          <h2 class="text-lg font-semibold mb-4">Boards</h2>
+          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            <template x-for="board in kanbanBoards" :key="board.slug">
+              <div @click="selectKanbanBoard(board.slug)"
+                   class="bg-white border border-gray-200 dark:bg-gray-900 dark:border-gray-800 rounded-xl p-4 cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 transition">
+                <div class="flex items-center gap-2 mb-2">
+                  <span class="text-2xl" x-text="board.icon || '📋'"></span>
+                  <div>
+                    <p class="font-semibold text-sm" x-text="board.name"></p>
+                    <p class="text-xs text-gray-500" x-text="board.description || ''"></p>
+                  </div>
+                </div>
+                <div class="flex gap-2 flex-wrap mt-3">
+                  <template x-for="status in ['todo','in_progress','blocked','done']" :key="status">
+                    <span class="text-xs px-2 py-0.5 rounded-full"
+                          :class="{
+                            'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300': status === 'todo',
+                            'bg-yellow-100 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-300': status === 'in_progress',
+                            'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300': status === 'blocked',
+                            'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300': status === 'done',
+                          }"
+                          x-show="(board.task_counts[status] || 0) > 0"
+                          x-text="kanbanStatusLabel(status) + ': ' + (board.task_counts[status] || 0)">
+                    </span>
+                  </template>
+                  <span class="text-xs text-gray-400" x-text="board.total_tasks + ' tasks total'"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Board detail view (columns) -->
+        <div x-show="!kanbanLoading && kanbanActiveSlug">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+              <button @click="kanbanActiveSlug = null; kanbanTaskModal = null"
+                      class="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition">← Boards</button>
+              <template x-for="board in kanbanBoards" :key="board.slug">
+                <span x-show="board.slug === kanbanActiveSlug" class="flex items-center gap-1.5">
+                  <span class="text-xl" x-text="board.icon || '📋'"></span>
+                  <span class="font-semibold" x-text="board.name"></span>
+                </span>
+              </template>
+            </div>
+            <button @click="loadKanbanTasks(kanbanActiveSlug)" class="text-sm px-3 py-1.5 bg-gray-200 hover:bg-gray-300 dark:bg-gray-800 dark:hover:bg-gray-700 rounded-lg transition">Refresh</button>
+          </div>
+
+          <!-- Columns -->
+          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <template x-for="status in kanbanStatusOrder" :key="status">
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                        x-text="kanbanStatusLabel(status)"></span>
+                  <span class="text-xs text-gray-400" x-text="kanbanTasksByStatus(status).length"></span>
+                </div>
+                <div class="min-h-[4rem] space-y-2">
+                  <template x-for="task in kanbanTasksByStatus(status)" :key="task.id">
+                    <div @click="kanbanTaskModal = task"
+                         class="bg-white border border-gray-200 dark:bg-gray-900 dark:border-gray-800 rounded-lg p-3 cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 transition text-sm">
+                      <p class="font-medium leading-snug line-clamp-3" x-text="task.title"></p>
+                      <div class="flex items-center justify-between mt-2">
+                        <span class="text-xs text-gray-400" x-show="task.priority != null" x-text="'P' + task.priority"></span>
+                        <span class="text-xs text-red-500" x-show="task.consecutive_failures > 0" x-text="'⚠ ' + task.consecutive_failures + ' fail'"></span>
+                      </div>
+                    </div>
+                  </template>
+                  <div x-show="kanbanTasksByStatus(status).length === 0"
+                       class="border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-lg h-12"></div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Task detail modal -->
+        <div x-show="kanbanTaskModal" x-transition
+             class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div @click.outside="kanbanTaskModal = null"
+               class="bg-white dark:bg-gray-900 rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6">
+            <div class="flex items-start justify-between mb-4">
+              <div class="flex-1 mr-4">
+                <span class="text-xs font-mono text-gray-400" x-text="kanbanTaskModal?.id"></span>
+                <h3 class="text-base font-semibold mt-1" x-text="kanbanTaskModal?.title"></h3>
+              </div>
+              <button @click="kanbanTaskModal = null" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xl leading-none">×</button>
+            </div>
+            <div class="flex flex-wrap gap-2 mb-4">
+              <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                    :class="{
+                      'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300': kanbanTaskModal?.status === 'todo',
+                      'bg-yellow-100 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-300': kanbanTaskModal?.status === 'in_progress',
+                      'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300': kanbanTaskModal?.status === 'blocked',
+                      'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300': kanbanTaskModal?.status === 'done',
+                      'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400': kanbanTaskModal?.status === 'cancelled',
+                    }"
+                    x-text="kanbanStatusLabel(kanbanTaskModal?.status)"></span>
+              <span x-show="kanbanTaskModal?.priority != null" class="text-xs px-2 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded-full"
+                    x-text="'Priority: ' + kanbanTaskModal?.priority"></span>
+              <span x-show="kanbanTaskModal?.assignee" class="text-xs px-2 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded-full"
+                    x-text="'Assignee: ' + kanbanTaskModal?.assignee"></span>
+            </div>
+            <div x-show="kanbanTaskModal?.body" class="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap bg-gray-50 dark:bg-gray-800 rounded-lg p-3 mb-4"
+                 x-text="kanbanTaskModal?.body"></div>
+            <div x-show="kanbanTaskModal?.last_failure_error"
+                 class="text-xs bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg p-3 mb-4">
+              <strong>Last error:</strong> <span x-text="kanbanTaskModal?.last_failure_error"></span>
+            </div>
+            <div class="text-xs text-gray-400 space-y-1">
+              <p x-show="kanbanTaskModal?.created_at" x-text="'Created: ' + formatDate(kanbanTaskModal?.created_at)"></p>
+              <p x-show="kanbanTaskModal?.started_at" x-text="'Started: ' + formatDate(kanbanTaskModal?.started_at)"></p>
+              <p x-show="kanbanTaskModal?.completed_at" x-text="'Completed: ' + formatDate(kanbanTaskModal?.completed_at)"></p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
     <div x-show="toast.show" x-transition
          class="fixed bottom-6 right-6 px-4 py-3 rounded-xl text-sm font-medium text-white shadow-lg"
          :class="toast.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'">
@@ -473,6 +607,13 @@
         restartAfterSave: true,
         toast: { show: false, message: '', type: 'success' },
         _pairingInterval: null,
+        kanbanBoards: [],
+        kanbanTasks: [],
+        kanbanStatusOrder: ['todo', 'in_progress', 'blocked', 'done', 'cancelled'],
+        kanbanStatusLabels: { todo: 'Todo', in_progress: 'In Progress', blocked: 'Blocked', done: 'Done', cancelled: 'Cancelled' },
+        kanbanLoading: false,
+        kanbanActiveSlug: null,
+        kanbanTaskModal: null,
 
         providers: [
           { key: 'OPENROUTER_API_KEY', label: 'OpenRouter' },
@@ -653,6 +794,43 @@
           if (h > 0) return `${h}h ${m}m ${s}s`;
           if (m > 0) return `${m}m ${s}s`;
           return `${s}s`;
+        },
+
+        async loadKanban() {
+          this.kanbanLoading = true;
+          try {
+            const res = await fetch('/api/kanban');
+            if (res.ok) {
+              const data = await res.json();
+              this.kanbanBoards = data.boards || [];
+            }
+          } catch (e) {}
+          this.kanbanLoading = false;
+        },
+
+        async loadKanbanTasks(slug) {
+          try {
+            const res = await fetch(`/api/kanban/${slug}/tasks`);
+            if (res.ok) {
+              const data = await res.json();
+              this.kanbanTasks = data.tasks || [];
+              if (data.status_order) this.kanbanStatusOrder = data.status_order;
+              if (data.status_labels) this.kanbanStatusLabels = data.status_labels;
+            }
+          } catch (e) {}
+        },
+
+        async selectKanbanBoard(slug) {
+          this.kanbanActiveSlug = slug;
+          await this.loadKanbanTasks(slug);
+        },
+
+        kanbanTasksByStatus(status) {
+          return this.kanbanTasks.filter(t => t.status === status);
+        },
+
+        kanbanStatusLabel(status) {
+          return this.kanbanStatusLabels[status] || status || '';
         },
 
         showToast(message, type = 'success') {
